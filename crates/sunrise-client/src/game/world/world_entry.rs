@@ -1322,6 +1322,9 @@ impl Game<'_> {
     /// that attach parts to a block or item it doesn't have are an error.
     pub(super) fn resolve_parts(&self) -> Result<()> {
         let prepared = self.prepare_parts(self.items())?;
+        // A piglin's arm pose reads `#piglin_loved`: the server's tags on a remote client.
+        let tags = self.server_items.as_deref().unwrap_or(self.items());
+        sunrise_client::mobs::piglin::install_loved_items(&tags.item_tags);
         if self
             .remote
             .as_ref()

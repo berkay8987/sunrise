@@ -39,3 +39,17 @@ fn a_drinking_witch_sends_her_own_flag_and_no_item_use() {
     assert_eq!(sent_at(&witch, &hub, 8), Some(Value::Byte(1)));
     assert_eq!(sent_at(&witch, &hub, 17), None);
 }
+
+/// An admiring piglin is not using an item either (#5132): `PiglinAi.holdInOffHand` sets no
+/// living flag, and a client draws `PiglinArmPose.ADMIRING_ITEM` from the off-hand item.
+#[test]
+fn an_admiring_piglin_sends_no_item_use() {
+    let hub = meta_hub();
+    let mut piglin = fixture_mob("minecraft:piglin");
+    piglin.extra.set_slot_id(
+        sunrise_items::equipment::OFFHAND,
+        Some("minecraft:gold_ingot".into()),
+    );
+    piglin.extra.using_item = sunrise_client::mobs::piglin::ADMIRE + 1;
+    assert_eq!(sent_at(&piglin, &hub, 8), None, "living flags stay 0");
+}

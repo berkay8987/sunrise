@@ -600,6 +600,7 @@ pub(in crate::game) mod tests {
             "minecraft:ravager" => Species::Ravager,
             "minecraft:zombie" => Species::Zombie,
             "minecraft:enderman" => Species::Enderman,
+            "minecraft:piglin" => Species::Piglin,
             _ => panic!("unknown fixture species"),
         };
         // Metadata needs no AI or model. Avoid the resource loader, which also

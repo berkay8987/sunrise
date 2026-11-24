@@ -2364,20 +2364,7 @@ pub(crate) fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
                 },
             )
         });
-    // Piglin.getArmPose: dancing comes first.
-    let pose = if m.extra.scratch[0] > 0 {
-        PiglinPose::Dancing
-    } else if m.extra.using_item > 0 && m.extra.off_hand_id().is_some() {
-        PiglinPose::AdmiringItem
-    } else if m.extra.flag {
-        PiglinPose::CrossbowCharge
-    } else if m.extra.main_hand_id() == Some("minecraft:crossbow") && m.ai.aggressive {
-        PiglinPose::CrossbowHold
-    } else if m.ai.aggressive && m.extra.main_hand_id().is_some() && spear.is_none() {
-        PiglinPose::MeleeWeapon
-    } else {
-        PiglinPose::Default
-    };
+    let pose = piglin_arm_pose(m, spear.is_some(), is_loved_item);
     piglin_pose_humanoid(
         p,
         s,
@@ -2387,6 +2374,49 @@ pub(crate) fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
         spear,
         Some(m),
     );
+}
+/// The `#minecraft:piglin_loved` items of the tags the game plays with (a
+/// remote client's are the server's), which a piglin's arm pose reads.
+static LOVED_ITEMS: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
+    std::sync::RwLock::new(None);
+/// Publish the `#minecraft:piglin_loved` items of these item tags.
+pub fn install_loved_items(
+    item_tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+) {
+    let loved = item_tags
+        .get("minecraft:piglin_loved")
+        .cloned()
+        .unwrap_or_default();
+    *LOVED_ITEMS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(loved);
+}
+/// `PiglinAi.isLovedItem`: the item is in `#minecraft:piglin_loved`.
+pub fn is_loved_item(item: &str) -> bool {
+    LOVED_ITEMS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|loved| loved.contains(item))
+}
+/// `Piglin.getArmPose`; `spear` when the main arm holds a spear and `loved`
+/// is `PiglinAi.isLovedItem`. Admiring is read from the off-hand item alone:
+/// no use flag is involved, as a server never sends one for it.
+pub fn piglin_arm_pose(m: &Mob, spear: bool, loved: impl Fn(&str) -> bool) -> PiglinPose {
+    // Dancing comes first.
+    if m.extra.scratch[0] > 0 {
+        PiglinPose::Dancing
+    } else if m.extra.off_hand_id().is_some_and(loved) {
+        PiglinPose::AdmiringItem
+    } else if m.extra.flag {
+        PiglinPose::CrossbowCharge
+    } else if m.extra.main_hand_id() == Some("minecraft:crossbow") && m.ai.aggressive {
+        PiglinPose::CrossbowHold
+    } else if m.ai.aggressive && m.extra.main_hand_id().is_some() && !spear {
+        PiglinPose::MeleeWeapon
+    } else {
+        PiglinPose::Default
+    }
 }
 /// `PiglinArmPose`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3413,5 +3443,39 @@ mod hoglin_pacified_feeding_tests {
             assert_eq!(m.extra.in_love, 600);
         });
         assert!(ran, "vanilla data is missing");
+    }
+}
+
+#[cfg(test)]
+mod arm_pose_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use std::sync::Arc;
+
+    fn piglin(off_hand: &str) -> Mob {
+        let mut kind = kind();
+        Arc::make_mut(&mut kind).species = Species::Piglin;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.extra
+            .set_slot_id(sunrise_items::equipment::OFFHAND, Some(off_hand.into()));
+        m
+    }
+    fn loved(item: &str) -> bool {
+        item == "minecraft:gold_ingot"
+    }
+
+    /// `Piglin.getArmPose`: `ADMIRING_ITEM` comes from a `#piglin_loved` off-hand item, with no
+    /// use flag (#5132); an off-hand item outside the tag is not admired.
+    #[test]
+    fn a_loved_off_hand_item_is_admired_without_a_use() {
+        let gold = piglin("minecraft:gold_ingot");
+        assert_eq!(gold.extra.using_item, 0);
+        assert_eq!(
+            piglin_arm_pose(&gold, false, loved),
+            PiglinPose::AdmiringItem
+        );
+        let mut stick = piglin("minecraft:stick");
+        stick.extra.using_item = ADMIRE + 1;
+        assert_eq!(piglin_arm_pose(&stick, false, loved), PiglinPose::Default);
     }
 }

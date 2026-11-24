@@ -426,12 +426,13 @@ pub(super) fn mob_meta(
     defaults.push((5, serializer::BOOLEAN, Value::Bool(false)));
     // LivingEntity.DATA_LIVING_ENTITY_FLAGS: using an item 1, in the off
     // hand 2 (a skeleton draws its bow). Only startUsingItem and
-    // stopUsingItem write them: a drinking witch's count is her own
+    // stopUsingItem write them, so bit 0 is `LivingEntity.isUsingItem`
+    // (`spear_use::is_using_item`): a drinking witch's count is her own
     // (`Witch.usingTime`, with `Witch.DATA_USING_ITEM` in `mob_raider_meta`),
-    // so her living flags stay 0 while she drinks. A witch that starts a real
-    // use is sent as one. An admiring piglin's count still goes out as a use:
-    // a client draws `PiglinArmPose.ADMIRING_ITEM` from it.
-    let uses_item = m.extra.using_item > 0 && !(m.species() == Species::Witch && m.extra.flag);
+    // as an admiring piglin's is, and neither is a use. A client draws
+    // `PiglinArmPose.ADMIRING_ITEM` from the off-hand item (#5132). A witch
+    // that starts a real use is sent as one.
+    let uses_item = sunrise_client::mobs::spear_use::is_using_item(m);
     let using = i8::from(uses_item) | i8::from(m.extra.using_off_hand) << 1;
     if using != 0 {
         meta.push((8, serializer::BYTE, Value::Byte(using)));

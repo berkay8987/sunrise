@@ -41,6 +41,8 @@ impl Game<'_> {
         if let Some(enchantments) = self.remote.as_mut().and_then(|r| r.enchantments.as_mut()) {
             Arc::make_mut(enchantments).entity_tags = items.entity_type_tags.members().clone();
         }
+        // A piglin's arm pose reads the server's `#piglin_loved`.
+        sunrise_client::mobs::piglin::install_loved_items(&items.item_tags);
         self.server_items = Some(Arc::new(items));
         self.install_remote_registry_snapshots();
     }
