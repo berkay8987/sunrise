@@ -404,6 +404,7 @@ fn prepare(
     target: contract::TargetName,
     release_check: bool,
 ) -> Result<Prepared, String> {
+    crate::check::warn_left_out_sources(project, &package.manifest);
     let project =
         dunce::canonicalize(project).map_err(|e| format!("{}: {e}", project.display()))?;
     let bundle = sunrise_native_build::Bundle {

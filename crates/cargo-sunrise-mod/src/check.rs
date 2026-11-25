@@ -337,11 +337,42 @@ fn load_jar_layer(
     Some(layer)
 }
 
+/// The warning for the files under `src/` a native project's source package leaves out
+/// ([`mod_source::package::left_out_source_files`]); None when it leaves out none.
+pub(crate) fn left_out_sources_warning(files: &[String]) -> Option<String> {
+    (!files.is_empty()).then(|| {
+        format!(
+            "{} {} not part of the source package: under src/ a package carries only .rs and \
+             .toml files, so include_str!/include_bytes! of {} fails to build here and in the \
+             registry's compile; embed the data as .toml or Rust, or ship it under assets/ or data/",
+            files.join(", "),
+            if files.len() == 1 { "is" } else { "are" },
+            if files.len() == 1 { "it" } else { "them" },
+        )
+    })
+}
+
+/// Prints [`left_out_sources_warning`] for the native project at `root`, once per run: before
+/// its build stages the package's files, and before a check or package reads its content.
+pub(crate) fn warn_left_out_sources(root: &Path, manifest: &sunrise_mod_package::Manifest) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    if manifest.native.is_none() {
+        return;
+    }
+    WARNED.call_once(|| {
+        let files = mod_source::package::left_out_source_files(root).unwrap_or_default();
+        if let Some(warning) = left_out_sources_warning(&files) {
+            eprintln!("warning: {warning}");
+        }
+    });
+}
+
 /// The references among a project's content files ([`sunrise_mod_package::content::check_references`]):
 /// warnings are printed, errors fail with one line each. When the manifest lists `[[jar]]`, each
 /// jar is read from the local jar store (fetched from Modrinth if missing) so references resolve
 /// against the mod and its jars together.
 pub fn references(root: &Path, manifest: &sunrise_mod_package::Manifest) -> Result<(), String> {
+    warn_left_out_sources(root, manifest);
     let content = sunrise_mod_package::Content::read(root, manifest)?;
     let jars = load_jar_layer(manifest);
     let findings =
@@ -579,6 +610,29 @@ fn renamed_folders(files: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The files a native package leaves out of `src/` are named before a build, with what a
+    /// package carries there and where the data can go instead; none, no warning.
+    #[test]
+    fn a_left_out_src_file_is_named_with_what_a_package_carries() {
+        assert_eq!(left_out_sources_warning(&[]), None);
+        assert_eq!(
+            left_out_sources_warning(&["src/catalog.json".to_owned()]).as_deref(),
+            Some(
+                "src/catalog.json is not part of the source package: under src/ a package \
+                 carries only .rs and .toml files, so include_str!/include_bytes! of it fails to \
+                 build here and in the registry's compile; embed the data as .toml or Rust, or \
+                 ship it under assets/ or data/"
+            )
+        );
+        let two =
+            left_out_sources_warning(&["src/a.json".to_owned(), "src/b.png".to_owned()]).unwrap();
+        assert!(
+            two.starts_with("src/a.json, src/b.png are not part of the source package:"),
+            "{two}"
+        );
+        assert!(two.contains("include_bytes! of them fails"), "{two}");
+    }
 
     #[test]
     fn files_in_a_folder_26_3_renamed_are_named_once_per_folder() {
