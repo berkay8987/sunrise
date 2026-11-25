@@ -1,7 +1,7 @@
 //! Real receiver, mod dispatcher and window input regressions for debt 59.
 use super::*;
 use crate::game::WindowKeyInput;
-use mod_api::MouseScrollingEvent;
+use mod_api::{MouseScrollingEvent, ScreenFileDroppedEvent};
 use sunrise_client::{items::ItemStack, keybinds::VanillaMappingSlot, preedit, widgets};
 use winit::{dpi::PhysicalPosition, event::Ime, keyboard::PhysicalKey, window::WindowId};
 
@@ -15,6 +15,7 @@ enum Cancel {
     Drag,
     ScreenWheel,
     GameWheel,
+    FileDrop,
     Move,
 }
 
@@ -35,6 +36,7 @@ enum Seen {
     GameWheel([f64; 2], [i32; 2], [bool; 3], [f32; 2], u32),
     Moved([f32; 2], [f32; 2]),
     Motion(String, [f64; 2]),
+    FileDropped(String, String),
 }
 
 #[derive(Default)]
@@ -225,6 +227,23 @@ impl Hooks for Observe {
             let owner = event.screen.mod_screen.unwrap_or("").to_owned();
             state.seen.push(Seen::Motion(owner, event.delta));
         }
+    }
+
+    fn screen_file_dropped(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut ScreenFileDroppedEvent<'_>,
+    ) -> Flow {
+        let mut state = self.0.lock().unwrap();
+        let screen = event
+            .screen
+            .mod_screen
+            .unwrap_or(event.screen.id)
+            .to_owned();
+        state
+            .seen
+            .push(Seen::FileDropped(screen, event.path.to_owned()));
+        flow(state.cancel == Cancel::FileDrop)
     }
 
     fn screen_mouse_scrolled_pre(
@@ -491,6 +510,55 @@ fn inventory_release_post_distinguishes_quick_craft_from_swallowed_release() {
         assert_eq!(game.carried.as_ref().unwrap().count, 6);
         send_mouse_button(game, id, MouseButton::Left, false);
         assert_eq!(take(state), [Seen::ReleasePost("inventory".into(), true)]);
+    });
+}
+
+/// `Screen.onFilesDrop` (#5788): a file dropped on the window reaches the open screen's mods,
+/// one call per file, with the screen it landed on; a cancel takes the file from the screen's
+/// own handling, and with no screen open nothing fires.
+#[test]
+#[ignore = "daily"]
+fn a_dropped_file_reaches_the_open_screens_mods() {
+    if run_fresh_cases(
+        "game::native_hooks::base::screen_widgets_tests::input_routing::a_dropped_file_reaches_the_open_screens_mods",
+        "SUNRISE_SCREEN_FILE_DROP_CHILD",
+        &["drop"],
+    ) {
+        return;
+    }
+    with_input_game(|game, id, state| {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("script.lua");
+        let second = dir.path().join("schematic.nbt");
+        let text = |path: &std::path::Path| path.to_str().unwrap().to_owned();
+        assert!(game.mod_screen_open("input_route"));
+        take(state);
+        send(game, id, WindowEvent::DroppedFile(first.clone()));
+        send(game, id, WindowEvent::DroppedFile(second.clone()));
+        assert_eq!(
+            take(state),
+            [
+                Seen::FileDropped("input_route".into(), text(&first)),
+                Seen::FileDropped("input_route".into(), text(&second)),
+            ]
+        );
+        // Not cancelled: the screen handles the file itself.
+        assert!(!game.screen_file_dropped(&first));
+        take(state);
+        state.lock().unwrap().cancel = Cancel::FileDrop;
+        assert!(game.screen_file_dropped(&first));
+        assert_eq!(
+            take(state),
+            [Seen::FileDropped("input_route".into(), text(&first))]
+        );
+        state.lock().unwrap().cancel = Cancel::None;
+        // No screen open: nothing hears the drop.
+        game.close_mod_screen();
+        game.title = None;
+        game.screen = crate::game::Screen::Playing;
+        send(game, id, WindowEvent::DroppedFile(first.clone()));
+        assert!(!game.screen_file_dropped(&first));
+        assert!(take(state).is_empty());
     });
 }
 

@@ -12457,8 +12457,11 @@ impl Game<'_> {
             self.update_modifiers(winit::keyboard::ModifiersState::empty());
             self.debug_keys.reset();
         }
-        // Pack drops on the resource-pack and Create New World screens.
-        if let WindowEvent::DroppedFile(path) = event {
+        // Pack drops on the resource-pack and Create New World screens, after the open screen's
+        // mods (`Screen.onFilesDrop`), which may take the file instead.
+        if let WindowEvent::DroppedFile(path) = event
+            && !self.screen_file_dropped(path)
+        {
             self.drop_pack_file(path);
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.

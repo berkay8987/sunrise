@@ -1,0 +1,3 @@
+ids = ["hook:screen_file_dropped", "type:ScreenFileDroppedEvent", "type:HookId"]
+why = "Adds the client screen_file_dropped hook, version 1: vanilla's Screen.onFilesDrop. A file or folder dropped on the game window while a screen is open reaches the open screen's mods first, one call per file, with the screen it landed on and the file's path; a cancel keeps the screen's own handling (the pack screens' copy) from running for that file (#5788). HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the ScreenFileDropped arm; one with a wildcard arm compiles unchanged."
