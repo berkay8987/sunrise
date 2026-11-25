@@ -483,6 +483,9 @@ pub struct State<'a> {
     pub partial: f32,
     /// Optional frame-local observer; absent without subscribers.
     pub observer: Option<Observation<'a>>,
+    /// The resources the frame draws from, which answer its tag reads (a piglin's
+    /// `#piglin_loved`); absent for tools, probes and tests, which then read no tag.
+    pub data: Option<&'a dyn super::render::RenderDataSource>,
 }
 
 impl State<'static> {
@@ -495,6 +498,17 @@ impl State<'static> {
         State {
             observer: observer.map(|observer| Observation { source, observer }),
             ..self
+        }
+    }
+    /// [`Self::observed`] by `data`'s observer, with `data` answering the frame's tag reads.
+    pub fn drawn_from<'a>(
+        self,
+        source: &'a Mob,
+        data: &'a dyn super::render::RenderDataSource,
+    ) -> State<'a> {
+        State {
+            data: Some(data),
+            ..self.observed(source, data.humanoid_setup())
         }
     }
 }
@@ -547,6 +561,7 @@ pub fn state(m: &Mob, alpha: f32) -> State<'static> {
         baby: m.is_baby(),
         partial: alpha,
         observer: None,
+        data: None,
     }
 }
 fn head(p: &mut Poses, s: &State) {
@@ -1548,6 +1563,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let mut poses = Poses {
             map: [
@@ -1603,6 +1619,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: [
@@ -1650,6 +1667,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
@@ -1755,6 +1773,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let mut p = Poses {
             map: ["head", "right_arm", "left_arm"]
@@ -1807,6 +1826,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm"]
@@ -1872,6 +1892,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
@@ -1918,6 +1939,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         for (anim, pose, expected) in [
             (Anim::Zombie, ArmPose::ThrowTrident, -PI),
@@ -2113,6 +2135,7 @@ mod flight_pose_tests {
                 baby: false,
                 partial: 0.0,
                 observer: None,
+                data: None,
             };
             setup(&m, &state, &mut p, &HashMap::new());
             for arm in ["right_arm", "left_arm"] {

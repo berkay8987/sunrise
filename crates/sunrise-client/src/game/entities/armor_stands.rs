@@ -1999,6 +1999,7 @@ impl Game<'_> {
             baby: a.small,
             partial,
             observer: None,
+            data: None,
         };
         let mut humanoid = anim::Hum::new(ArmPose::Empty, ArmPose::Empty);
         humanoid.passenger = a.vehicle.is_some();

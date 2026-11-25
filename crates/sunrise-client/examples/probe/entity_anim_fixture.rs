@@ -412,6 +412,7 @@ pub fn main() -> sunrise_client::Result<()> {
             baby,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let mut poses = Poses::new(&model);
         entity_state(&mut mob, def.species, case);

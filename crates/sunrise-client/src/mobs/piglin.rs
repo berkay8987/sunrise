@@ -2364,7 +2364,9 @@ pub(crate) fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
                 },
             )
         });
-    let pose = piglin_arm_pose(m, spear.is_some(), is_loved_item);
+    let pose = piglin_arm_pose(m, spear.is_some(), |item| {
+        s.data.is_some_and(|data| data.piglin_loves(item))
+    });
     piglin_pose_humanoid(
         p,
         s,
@@ -2375,34 +2377,20 @@ pub(crate) fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
         Some(m),
     );
 }
-/// The `#minecraft:piglin_loved` items of the tags the game plays with (a
-/// remote client's are the server's), which a piglin's arm pose reads.
-static LOVED_ITEMS: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
-    std::sync::RwLock::new(None);
-/// Publish the `#minecraft:piglin_loved` items of these item tags.
-pub fn install_loved_items(
-    item_tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
-) {
-    let loved = item_tags
-        .get("minecraft:piglin_loved")
-        .cloned()
-        .unwrap_or_default();
-    *LOVED_ITEMS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(loved);
-}
-/// `PiglinAi.isLovedItem`: the item is in `#minecraft:piglin_loved`.
-pub fn is_loved_item(item: &str) -> bool {
-    LOVED_ITEMS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|loved| loved.contains(item))
-}
 /// `Piglin.getArmPose`; `spear` when the main arm holds a spear and `loved`
 /// is `PiglinAi.isLovedItem`. Admiring is read from the off-hand item alone:
-/// no use flag is involved, as a server never sends one for it.
+/// no use flag is involved, as a server never sends one for it. A piglin
+/// brute shares the model but not the pose: `PiglinBrute.getArmPose` is only
+/// the melee pose or the default, so it never admires or dances.
 pub fn piglin_arm_pose(m: &Mob, spear: bool, loved: impl Fn(&str) -> bool) -> PiglinPose {
+    let melee = m.ai.aggressive && m.extra.main_hand_id().is_some() && !spear;
+    if m.species() == Species::PiglinBrute {
+        return if melee {
+            PiglinPose::MeleeWeapon
+        } else {
+            PiglinPose::Default
+        };
+    }
     // Dancing comes first.
     if m.extra.scratch[0] > 0 {
         PiglinPose::Dancing
@@ -2412,7 +2400,7 @@ pub fn piglin_arm_pose(m: &Mob, spear: bool, loved: impl Fn(&str) -> bool) -> Pi
         PiglinPose::CrossbowCharge
     } else if m.extra.main_hand_id() == Some("minecraft:crossbow") && m.ai.aggressive {
         PiglinPose::CrossbowHold
-    } else if m.ai.aggressive && m.extra.main_hand_id().is_some() && !spear {
+    } else if melee {
         PiglinPose::MeleeWeapon
     } else {
         PiglinPose::Default
@@ -3453,8 +3441,11 @@ mod arm_pose_tests {
     use std::sync::Arc;
 
     fn piglin(off_hand: &str) -> Mob {
+        of(Species::Piglin, off_hand)
+    }
+    fn of(species: Species, off_hand: &str) -> Mob {
         let mut kind = kind();
-        Arc::make_mut(&mut kind).species = Species::Piglin;
+        Arc::make_mut(&mut kind).species = species;
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
         m.extra
             .set_slot_id(sunrise_items::equipment::OFFHAND, Some(off_hand.into()));
@@ -3477,5 +3468,24 @@ mod arm_pose_tests {
         let mut stick = piglin("minecraft:stick");
         stick.extra.using_item = ADMIRE + 1;
         assert_eq!(piglin_arm_pose(&stick, false, loved), PiglinPose::Default);
+    }
+
+    /// `PiglinBrute.getArmPose`: a brute holding gold in its off hand does not admire it; it
+    /// draws only the melee pose, when aggressive with a weapon, or the default.
+    #[test]
+    fn a_brute_never_admires() {
+        let mut brute = of(Species::PiglinBrute, "minecraft:gold_ingot");
+        assert_eq!(piglin_arm_pose(&brute, false, loved), PiglinPose::Default);
+        brute.extra.scratch[0] = 1;
+        assert_eq!(piglin_arm_pose(&brute, false, loved), PiglinPose::Default);
+        brute.ai.aggressive = true;
+        brute.extra.set_slot_id(
+            sunrise_items::equipment::MAINHAND,
+            Some("minecraft:golden_axe".into()),
+        );
+        assert_eq!(
+            piglin_arm_pose(&brute, false, loved),
+            PiglinPose::MeleeWeapon
+        );
     }
 }

@@ -940,6 +940,7 @@ mod tests {
             baby: true,
             partial: 0.25,
             observer: None,
+            data: None,
         };
         let model = bone("root", vec![]);
         let animation = animate(
@@ -989,6 +990,7 @@ mod tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         }
     }
 

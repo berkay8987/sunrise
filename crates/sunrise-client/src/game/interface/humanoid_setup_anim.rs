@@ -36,6 +36,25 @@ impl render::RenderDataSource for Game<'_> {
         mod_api::__private::listened(mod_api::HookId::LivingModelPosed)
             .then_some(self as &dyn render::ModelPosed)
     }
+    /// The server's `#minecraft:piglin_loved` on a client of a server, an integrated one
+    /// included, as its `UpdateTags` gave it (a data pack's or a mod's changes, a `/reload`);
+    /// the game's own item tags otherwise. Read as the piglin is drawn, so nothing outlives the
+    /// connection.
+    fn piglin_loves(&self, item: &str) -> bool {
+        const TAG: &str = "minecraft:piglin_loved";
+        if let Some(remote) = self.remote.as_ref()
+            && let Some(tags) = remote.registries.tags.get("minecraft:item")
+            && let Some(ids) = remote.builtin.get("minecraft:item")
+        {
+            return tags
+                .get(TAG)
+                .is_some_and(|members| members.iter().any(|&id| ids.name(id) == Some(item)));
+        }
+        self.items()
+            .item_tags
+            .get(TAG)
+            .is_some_and(|members| members.contains(item))
+    }
 }
 
 /// A living-entity draw adapter that lends a target's hidden stock-layer mask to the model
@@ -127,6 +146,50 @@ impl Game<'_> {
             partial_tick,
             game_time: self.title.is_none().then_some(self.world.game_time),
             parts: poses,
+        });
+    }
+}
+
+#[cfg(test)]
+mod piglin_loved_tests {
+    use crate::game::native_entity_refs::tests::with_client_game;
+    use std::sync::Arc;
+    use sunrise_client::mobs::render::RenderDataSource;
+    use sunrise_protocol::packets::configuration::{RegistryTags, TagEntry, UpdateTags};
+
+    /// A client reads `#minecraft:piglin_loved` from the server's tags (#5132): a server whose
+    /// tag holds only a stick loves the stick and not gold. With no server, the game's own
+    /// tags answer, vanilla's gold, so nothing of the server's outlives its connection.
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_reads_piglin_loved_from_the_servers_tags() {
+        with_client_game(|game| {
+            let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(pipe, "PiglinLoved").unwrap();
+            let stick = game
+                .remote
+                .as_ref()
+                .unwrap()
+                .builtin
+                .get("minecraft:item")
+                .unwrap()
+                .id("minecraft:stick")
+                .unwrap();
+            let registries = &mut game.remote.as_mut().unwrap().registries;
+            Arc::make_mut(registries).add_tags(&UpdateTags {
+                registries: vec![RegistryTags {
+                    registry: "minecraft:item".into(),
+                    tags: vec![TagEntry {
+                        name: "minecraft:piglin_loved".into(),
+                        ids: vec![stick],
+                    }],
+                }],
+            });
+            assert!(game.piglin_loves("minecraft:stick"));
+            assert!(!game.piglin_loves("minecraft:gold_ingot"));
+            game.remote = None;
+            assert!(game.piglin_loves("minecraft:gold_ingot"));
+            assert!(!game.piglin_loves("minecraft:stick"));
         });
     }
 }
