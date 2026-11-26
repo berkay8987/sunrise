@@ -7,9 +7,11 @@
 //!
 //! Two halves meet through [`Command`]s. [`DynamicTextures`] is the client thread's: which ids
 //! exist, who owns them and how large they are, with every refusal decided there, and no pixels
-//! kept. Each accepted call queues a command; a frame takes the queue
-//! ([`DynamicTextures::take_commands`]) in the batch, and the render thread applies the commands
-//! in order before the frame ([`Store::apply`]), with no merging. [`Store`] holds the GPU
+//! kept. A create makes its GPU texture within the call ([`Store::create_now`]), so a device
+//! refusal is the call's answer. Every other accepted call (a write, a resize, a release) queues
+//! a command; a frame takes the queue ([`DynamicTextures::take_commands`]) in the batch, and the
+//! render thread applies the commands in order before the frame ([`Store::apply`]), with no
+//! merging. [`Store`] holds the GPU
 //! textures. It is shared by the renderers that follow one another on the same device, so a
 //! resource reload keeps every texture; a new device starts with an empty one, which
 //! [`DynamicTextures::bind`] notices and answers by forgetting every id.
@@ -428,8 +430,8 @@ impl Store {
 
     /// `DynamicTexture.dumpContents` of each texture in `textures` (`F3 + S`): read back from the
     /// GPU and written to `dir` as a PNG named after its id with `/` and `:` as `_`
-    /// (`Identifier.toDebugFileName`). A texture with no GPU texture (its creation failed, or its
-    /// commands have not reached the render thread yet) is skipped. Returns the files written.
+    /// (`Identifier.toDebugFileName`). A texture with no GPU texture (a resize the device refused
+    /// on the render thread) is skipped. Returns the files written.
     pub fn dump_contents<'a>(
         &self,
         device: &wgpu::Device,

@@ -10,7 +10,7 @@
 /// GPU's are as they were before the call.
 ///
 /// A surviving variant's wire index moved down when `NoSlot`, `OverBudget` and `ClassChange`
-/// were removed; `OutOfBounds` and then `BadMipLevels` were added last.
+/// were removed; `OutOfBounds`, `BadMipLevels` and then `DeviceRefused` were added last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
