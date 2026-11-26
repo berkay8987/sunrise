@@ -14,6 +14,7 @@ pub trait Hooks {
     /// wakes whatever the player wears, so it doesn't ask). Read the worn
     /// stack with `host.living(player.entity())` and `with_equipment`.
     /// Server-side.
+    #[notes = r##"**`gaze_disguise(observer, player, disguised)`**: does `player`'s head item disguise their gaze from `observer` (NeoForge's `IItemExtension.isGazeDisguise`, vanilla's `LivingEntity.PLAYER_NOT_WEARING_DISGUISE_ITEM`)? `disguised` comes in as vanilla's `#minecraft:gaze_disguise_equipment` test. An enderman asks before it measures a stare, so its answer comes before `enderman_anger`; an awake creaking asks when it checks whether it is looked at, and a dormant one doesn't ask. Server-only: the mob AI asks through `MobWorld::mob_hooks`, set only on an authoritative server while a mod listens, so with no listener the check is the tag test alone."##]
     #[hook(
         receiver = "read",
         dispatch = "flat",
