@@ -40,9 +40,23 @@ impl ClientGame<'_> {
     ) -> Result<(), DynamicTextureError> {
         self.bind_dynamic_textures();
         let owner = Self::dynamic_texture_owner(id)?;
-        self.client
+        let client = &mut self.client;
+        let gpu = client
+            .mod_gpu
+            .as_ref()
+            .ok_or(DynamicTextureError::Unavailable)?;
+        let size = [width, height];
+        // The GPU texture is made within the call, so a device refusal is the call's answer
+        // and leaves the id free.
+        client
             .dynamic_textures
-            .create(owner, id, [width, height], mip_levels, rgba)
+            .create(owner, id, size, mip_levels, rgba, |handle| {
+                gpu.create_dynamic_texture(handle, size, mip_levels, rgba)
+                    .map_err(|error| {
+                        log::warn!("dynamic texture {id} was not made: {error}");
+                        DynamicTextureError::DeviceRefused
+                    })
+            })
     }
     /// The calling mod's texture `id` given new pixels.
     pub fn update_dynamic_texture(

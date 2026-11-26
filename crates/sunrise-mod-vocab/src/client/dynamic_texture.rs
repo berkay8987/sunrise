@@ -42,6 +42,10 @@ pub enum DynamicTextureError {
     /// `mip_level` the texture does not have, or `update_dynamic_texture` of a size whose full
     /// chain is shorter than the texture's `mip_levels`.
     BadMipLevels,
+    /// `create_dynamic_texture` the graphics device refused within the call (out of video
+    /// memory, or a limit it reported wrongly). Nothing was made and the id stays free, so the
+    /// same id can be created again.
+    DeviceRefused,
 }
 
 impl std::fmt::Display for DynamicTextureError {
@@ -55,6 +59,7 @@ impl std::fmt::Display for DynamicTextureError {
             Self::Unavailable => "no graphics device holds dynamic textures here",
             Self::OutOfBounds => "the region is not inside the texture",
             Self::BadMipLevels => "the mip level count or mip level is not one the texture has",
+            Self::DeviceRefused => "the graphics device refused to make the texture",
         })
     }
 }
