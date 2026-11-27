@@ -2208,7 +2208,8 @@ fn check_inline_draw<'v>(
         return Err(PipelineDrawError::VertexFormatMismatch);
     }
     let mut bound_slices = Vec::with_capacity(vertices.len());
-    let mut vertex_records = Vec::with_capacity(vertices.len());
+    // The fewest records a vertex-step slice holds: every index must address one of them.
+    let mut vertex_records: Option<usize> = None;
     for ((binding_idx, fmt), &slice) in vertex_bindings.iter().zip(vertices.iter()) {
         let stride = fmt.stride as usize;
         if slice.len() % 4 != 0 || slice.len() % stride != 0 {
@@ -2222,6 +2223,8 @@ fn check_inline_draw<'v>(
                 {
                     return Err(PipelineDrawError::InvalidRange);
                 }
+                vertex_records =
+                    Some(vertex_records.map_or(record_count, |fewest| fewest.min(record_count)));
             }
             mod_api::VertexStepMode::Instance => {
                 if (mesh_draw.instances.end as usize) > record_count {
@@ -2230,7 +2233,6 @@ fn check_inline_draw<'v>(
             }
             _ => return Err(PipelineDrawError::VertexFormatMismatch),
         }
-        vertex_records.push((fmt.step_mode, record_count));
         bound_slices.push((u32::from(*binding_idx), slice));
     }
     check_generated_indices(topology, mesh_draw, max_buffer_size)?;
@@ -2263,7 +2265,7 @@ fn check_inline_draw<'v>(
             if idx_range.start > idx_range.end || (idx_range.end as usize) > idx_count {
                 return Err(PipelineDrawError::InvalidRange);
             }
-            check_indexed_vertices(&vertex_records, fmt, idx_bytes, idx_range, *base_vertex)?;
+            check_indexed_vertices(vertex_records, fmt, idx_bytes, idx_range, *base_vertex)?;
         }
         _ => return Err(PipelineDrawError::InvalidRange),
     }
@@ -2305,11 +2307,12 @@ fn check_generated_indices(
     Ok(())
 }
 
-/// Check that an indexed draw only reaches records every per-vertex buffer holds: each
-/// vertex-step buffer is non-empty, and the largest index in `range` plus `base_vertex` falls
-/// inside all of them. `records` lists each bound buffer's step mode and record count.
+/// Check that an indexed draw only reaches records every per-vertex buffer holds: the lowest
+/// index in `range` plus `base_vertex` is at least 0, and the largest falls inside the shortest
+/// vertex-step buffer. `vertex_records` is that buffer's record count; `None` when no buffer
+/// steps per vertex (instance-step buffers are bounded by the instance range instead).
 fn check_indexed_vertices(
-    records: &[(mod_api::VertexStepMode, usize)],
+    vertex_records: Option<usize>,
     format: mod_api::IndexFormat,
     index_bytes: &[u8],
     range: &std::ops::Range<u32>,
@@ -2330,12 +2333,10 @@ fn check_indexed_vertices(
         .fold((u32::MAX, 0), |(lo, hi), i| (lo.min(i), hi.max(i)));
     let first = i64::from(lowest) + i64::from(base_vertex);
     let last = i64::from(highest) + i64::from(base_vertex);
-    for &(step, count) in records {
-        if step == mod_api::VertexStepMode::Vertex && (first < 0 || last >= count as i64) {
-            return Err(PipelineDrawError::InvalidRange);
-        }
+    match vertex_records {
+        Some(count) if first < 0 || last >= count as i64 => Err(PipelineDrawError::InvalidRange),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Whether a compute dispatch uses one storage buffer or one storage-image mip level twice with
@@ -2517,42 +2518,24 @@ mod tests {
             .iter()
             .flat_map(|i| i.to_le_bytes())
             .collect();
-        let check = |records: &[(VertexStepMode, usize)], base: i32| {
+        let check = |records: Option<usize>, base: i32| {
             check_indexed_vertices(records, IndexFormat::Uint16, &indices, &(0..4), base)
         };
-        assert_eq!(check(&[(VertexStepMode::Vertex, 3)], 0), Ok(()));
+        assert_eq!(check(Some(3), 0), Ok(()));
         // An empty per-vertex buffer with a non-empty indexed range is refused, not drawn.
-        assert_eq!(
-            check(&[(VertexStepMode::Vertex, 0)], 0),
-            Err(PipelineDrawError::InvalidRange)
-        );
+        assert_eq!(check(Some(0), 0), Err(PipelineDrawError::InvalidRange));
         // The largest index (2) must fit, after `base_vertex`.
-        assert_eq!(
-            check(&[(VertexStepMode::Vertex, 2)], 0),
-            Err(PipelineDrawError::InvalidRange)
-        );
+        assert_eq!(check(Some(2), 0), Err(PipelineDrawError::InvalidRange));
         // `base_vertex` 2 moves the largest index to record 4.
-        assert_eq!(check(&[(VertexStepMode::Vertex, 5)], 2), Ok(()));
-        assert_eq!(
-            check(&[(VertexStepMode::Vertex, 4)], 2),
-            Err(PipelineDrawError::InvalidRange)
-        );
+        assert_eq!(check(Some(5), 2), Ok(()));
+        assert_eq!(check(Some(4), 2), Err(PipelineDrawError::InvalidRange));
         // A negative `base_vertex` that moves the lowest index below record 0 is refused.
-        assert_eq!(
-            check(&[(VertexStepMode::Vertex, 4)], -1),
-            Err(PipelineDrawError::InvalidRange)
-        );
+        assert_eq!(check(Some(4), -1), Err(PipelineDrawError::InvalidRange));
         // Instance-step buffers are bounded by the instance range, not by the indices.
-        assert_eq!(check(&[(VertexStepMode::Instance, 0)], 0), Ok(()));
+        assert_eq!(check(None, 0), Ok(()));
         // An empty range reads nothing.
         assert_eq!(
-            check_indexed_vertices(
-                &[(VertexStepMode::Vertex, 0)],
-                IndexFormat::Uint16,
-                &indices,
-                &(2..2),
-                0
-            ),
+            check_indexed_vertices(Some(0), IndexFormat::Uint16, &indices, &(2..2), 0),
             Ok(())
         );
     }
@@ -2591,6 +2574,11 @@ mod tests {
         // `base_vertex` 1 moves index 3 past the last record.
         assert_eq!(
             check(&in_range, MeshDraw::indexed(0..4, 1)),
+            Err(PipelineDrawError::InvalidRange)
+        );
+        // `base_vertex` -1 moves index 0 below the first record.
+        assert_eq!(
+            check(&in_range, MeshDraw::indexed(0..4, -1)),
             Err(PipelineDrawError::InvalidRange)
         );
         // A quad draw whose generated indices need a larger buffer than the device allows.
@@ -5056,6 +5044,191 @@ mod tests {
                 Err(mod_api::PipelineDrawError::Mesh(MeshError::Unavailable))
             );
             game.client.renderer.0 = renderer_slot;
+        });
+    }
+
+    /// What each draw a [`RangeProbe`] records answered, in order.
+    type RangeAnswers = std::sync::Arc<Mutex<Vec<Result<(), PipelineDrawError>>>>;
+
+    /// Records into one offscreen pass: an inline indexed draw whose index addresses a record
+    /// past its vertex slice, one whose negative `base_vertex` moves an index below record 0,
+    /// and then one valid draw.
+    struct RangeProbe(RangeAnswers);
+
+    #[mod_api::__subscriptions]
+    impl Hooks for RangeProbe {
+        fn register_render_pipelines(
+            &self,
+            _: &mod_api::RegistrationContext,
+            event: &mut mod_api::RegisterRenderPipelinesEvent<'_>,
+        ) {
+            event.register(mod_api::RenderPipeline::new(
+                Identifier::parse("range_probe:plain").unwrap(),
+                Identifier::parse("range_probe:core/plain").unwrap(),
+                mod_api::PipelineBlend::Opaque,
+                mod_api::WorldDepth::ThroughWalls,
+            ));
+        }
+
+        fn frame_graph_setup(
+            &self,
+            host: &dyn ClientHost,
+            event: &mut mod_api::FrameGraphSetupEvent<'_>,
+        ) {
+            let desc = mod_api::RenderTargetDescriptor::new([8, 8])
+                .color_target(mod_api::RenderTargetFormat::Rgba8Unorm);
+            let target = host.create_render_target(&desc).unwrap();
+            let pipeline = host
+                .render_assets()
+                .render_pipeline(&Identifier::parse("range_probe:plain").unwrap())
+                .unwrap();
+            // Four records of the default `PositionTexColor` format: 24 bytes a vertex.
+            let vertices = [0u8; 96];
+            let indices =
+                |list: [u16; 6]| -> Vec<u8> { list.iter().flat_map(|i| i.to_le_bytes()).collect() };
+            let past = indices([0, 1, 2, 2, 3, 4]);
+            let inside = indices([0, 1, 2, 2, 3, 0]);
+            let answers = self.0.clone();
+            event
+                .graph
+                .add_pass(
+                    mod_api::FramePassDescriptor::new(
+                        "range_probe",
+                        mod_api::FrameTarget::Mod(target),
+                    ),
+                    &mut |pass| {
+                        let mut draw = |index_bytes: &[u8], base_vertex: i32| {
+                            answers.lock().unwrap().push(pass.draw_vertices(
+                                pipeline,
+                                &[&vertices],
+                                Some((mod_api::IndexFormat::Uint16, index_bytes)),
+                                mod_api::MeshDraw::indexed(0..6, base_vertex),
+                                &mod_api::DrawBindings::EMPTY,
+                            ));
+                        };
+                        // Index 4 addresses a fifth record the slice does not hold.
+                        draw(&past, 0);
+                        // `base_vertex` -1 moves index 0 below record 0.
+                        draw(&inside, -1);
+                        // In range: recorded.
+                        draw(&inside, 0);
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    /// A frame-graph pass checks an inline indexed draw as the world pass does (#6409): an index
+    /// past the vertex slice and a negative `base_vertex` that underflows are `InvalidRange`, and
+    /// a refused draw records nothing; the valid draw after them is the pass's only draw.
+    #[test]
+    #[ignore = "daily"]
+    fn an_offscreen_pass_refuses_indices_outside_its_vertex_slice() {
+        use mod_api::__private::take_hook_panics;
+        use sunrise_client::gfx::world_primitives::FrameHooks;
+
+        // The mod's pipeline registration is process-global and published once: run in a child.
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::client_side::native_custom_geometry::tests::an_offscreen_pass_refuses_indices_outside_its_vertex_slice",
+            "SUNRISE_MOD_OFFSCREEN_RANGE_CHILD",
+            &["run"],
+        ) {
+            return;
+        }
+        super::super::native_entity_refs::tests::with_client_game(|game| {
+            let (_event_loop, window) =
+                crate::game::native_hooks::particle_count_tests::hidden_window();
+            game.common.options.offscreen = true;
+            let renderer = game.new_renderer(window.clone()).unwrap();
+            game.set_renderer(renderer);
+            game.client.window.0 = Some(window);
+
+            let answers = RangeAnswers::default();
+            mod_platform::__private::install(
+                vec![ModEntry::new(
+                    "range_probe",
+                    Box::new(RangeProbe(answers.clone())),
+                )]
+                .into(),
+            );
+            let _ = take_hook_panics();
+
+            let mut pipelines = Vec::new();
+            use mod_api::__private::game::RegistrationContextNew;
+            sunrise_gameplay_common::game::native_hooks::native_register_render_pipelines(
+                &mod_api::RegistrationContext::new(),
+                &mut pipelines,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            assert_eq!(pipelines.len(), 1);
+            let vanilla = tempfile::tempdir().unwrap();
+            std::fs::write(
+                vanilla.path().join("render-pipelines.json"),
+                r#"{"required":["minecraft:pipeline/solid_block"],"optional":["minecraft:pipeline/wireframe"]}"#,
+            )
+            .unwrap();
+            sunrise_client_render::mod_pipelines::register(pipelines, vanilla.path()).unwrap();
+            let shaders = tempfile::tempdir().unwrap();
+            let core = shaders.path().join("assets/range_probe/shaders/core");
+            std::fs::create_dir_all(&core).unwrap();
+            std::fs::write(
+                core.join("plain.vsh"),
+                "#version 330\n\
+                 in vec3 Position;\n\
+                 in vec2 UV0;\n\
+                 in vec4 Color;\n\
+                 out vec4 vColor;\n\
+                 void main() {\n\
+                     gl_Position = vec4(Position.xy, 0.5, 1.0);\n\
+                     vColor = Color;\n\
+                 }\n",
+            )
+            .unwrap();
+            std::fs::write(
+                core.join("plain.fsh"),
+                "#version 330\n\
+                 in vec4 vColor;\n\
+                 out vec4 fragColor;\n\
+                 void main() {\n\
+                     fragColor = vColor;\n\
+                 }\n",
+            )
+            .unwrap();
+            let mut render = sunrise_client_render::assets::RenderAssets::unpublished();
+            render.mod_pipelines = sunrise_client_render::mod_pipelines::Pipelines::load(
+                &sunrise_assets::resource_source::ResourceSource::directory(
+                    shaders.path().to_owned(),
+                ),
+                7,
+            )
+            .unwrap();
+            game.client.client_pack.render = std::sync::Arc::new(render);
+
+            let camera = test_camera([0.0; 3], Mat4::IDENTITY);
+            let mut draw = WorldGeometry::default();
+            draw.reset([0.0; 3], Mat4::IDENTITY, [0.0; 2]);
+            {
+                let mut driver = GameWorldStageDriver::new(game, &camera, 0.0, &mut draw);
+                driver.on_frame_graph_setup(&[], false);
+                let graph = driver.take_frame_graph().unwrap();
+                assert_eq!(graph.passes.len(), 1);
+                assert_eq!(
+                    graph.passes[0].draws.len(),
+                    1,
+                    "only the valid draw is recorded"
+                );
+            }
+            let panics = take_hook_panics();
+            assert!(panics.is_empty(), "{panics:?}");
+            assert_eq!(
+                *answers.lock().unwrap(),
+                [
+                    Err(PipelineDrawError::InvalidRange),
+                    Err(PipelineDrawError::InvalidRange),
+                    Ok(()),
+                ]
+            );
         });
     }
 
