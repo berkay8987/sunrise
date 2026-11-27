@@ -1272,14 +1272,37 @@ impl<'v> BlockEntityDraw<'v> {
         tint: u32,
         light: u32,
     ) {
+        self.emit_quad_facing(corners, uv, sprite, tint, light, None);
+    }
+
+    /// [`Self::emit_quad`] with the face's own `facing` normal in the corners' coordinates, when
+    /// it has one (`ModelPolygon.normal`): turned by the pose's normal matrix and normalized, as
+    /// `PoseStack.Pose.transformNormal` turns it for `ModelPart.compile`. Without one, or when
+    /// it is degenerate, the normal comes from the corners' winding.
+    fn emit_quad_facing(
+        &mut self,
+        corners: [[f32; 3]; 4],
+        uv: [[f32; 2]; 4],
+        sprite: Rect,
+        tint: u32,
+        light: u32,
+        facing: Option<[f32; 3]>,
+    ) {
         let pose = self.pose();
         let at = corners.map(|c| pose.transform_point3(Vec3::from_array(c)));
-        let normal = (at[1] - at[0]).cross(at[2] - at[0]).normalize_or_zero();
-        let normal = if normal == Vec3::ZERO {
-            (at[2] - at[1]).cross(at[3] - at[1]).normalize_or(Vec3::Y)
-        } else {
-            normal
-        };
+        let given = facing.and_then(|n| {
+            let normals = glam::Mat3::from_mat4(pose).inverse().transpose();
+            let n = (normals * Vec3::from_array(n)).normalize_or_zero();
+            (n != Vec3::ZERO && n.is_finite()).then_some(n)
+        });
+        let normal = given.unwrap_or_else(|| {
+            let normal = (at[1] - at[0]).cross(at[2] - at[0]).normalize_or_zero();
+            if normal == Vec3::ZERO {
+                (at[2] - at[1]).cross(at[3] - at[1]).normalize_or(Vec3::Y)
+            } else {
+                normal
+            }
+        });
         // A turning part is shaded where it turns to (`place_geometry` turns the
         // normal, the shader shades it, as `draw_block`'s faces are); a part
         // standing still keeps its shading in its colour. Its light is fixed
@@ -2724,7 +2747,7 @@ fn draw_model_part(draw: &mut BlockEntityDraw, part: &ModelPart, sprite: Rect, t
         for polygon in &part.polygons {
             let corners = polygon.vertices.map(|v| v.pos.map(|c| c / 16.0));
             let uv = polygon.vertices.map(|v| [v.u, v.v]);
-            draw.emit_quad(corners, uv, sprite, tint, draw.light);
+            draw.emit_quad_facing(corners, uv, sprite, tint, draw.light, Some(polygon.normal));
         }
     }
     for (_, child) in part.children() {
@@ -4363,6 +4386,54 @@ pub mod tests {
         d.scale([2.0, 2.0, 2.0]);
         let p = d.pose().transform_point3(Vec3::ONE);
         assert_eq!(p, Vec3::new(12.0, 4.0, 2.0));
+    }
+
+    #[cfg(test)]
+    /// #6414: `draw_model_part` shades a polygon by its own normal, turned by the pose, as
+    /// `ModelPart.compile` does: one whose normal opposes its winding shades as that normal
+    /// faces, not as the winding does, and a part turned half about x turns it back.
+    #[test]
+    fn a_model_part_shades_by_its_polygons_normal() {
+        use mod_api::{CubeListBuilder, LayerDefinition, MeshDefinition, PartPose};
+        use sunrise_core::geometry::Direction as Face;
+        let tint = 0xFF_FFFF;
+        let model = |x_rot: f32| {
+            let mut mesh = MeshDefinition::new();
+            let root = mesh.root();
+            mesh.add_or_replace_child(
+                root,
+                "lid",
+                CubeListBuilder::create().add_box_faces([0.0; 3], [16.0; 3], &[Face::Up]),
+                PartPose::offset_and_rotation(0.0, 0.0, 0.0, x_rot, 0.0, 0.0),
+            );
+            LayerDefinition::create(mesh, 64, 64).bake_root()
+        };
+        let color = |model: &ModelPart| {
+            let mut d = draw();
+            draw_model_part(&mut d, model, sprite(), tint);
+            let lights = d.lights;
+            let out = d.into_vertices();
+            assert_eq!(out.len(), 4);
+            (out[0].color, lights)
+        };
+        let (up, lights) = color(&model(0.0));
+        assert_eq!(up, shaded(tint, diffuse(Vec3::Y, lights)));
+        // The same face with a normal pointing down shades as a bottom face.
+        let mut flipped = model(0.0);
+        let lid = flipped.children_mut().next().unwrap().1;
+        for polygon in &mut lid.polygons {
+            polygon.normal = [0.0, -1.0, 0.0];
+        }
+        let (down, _) = color(&flipped);
+        assert_eq!(down, shaded(tint, diffuse(Vec3::NEG_Y, lights)));
+        assert_ne!(down, up);
+        // Turned half about x, the downward normal points up again.
+        let mut turned = model(std::f32::consts::PI);
+        let lid = turned.children_mut().next().unwrap().1;
+        for polygon in &mut lid.polygons {
+            polygon.normal = [0.0, -1.0, 0.0];
+        }
+        assert_eq!(color(&turned).0, up);
     }
 
     #[cfg(test)]
