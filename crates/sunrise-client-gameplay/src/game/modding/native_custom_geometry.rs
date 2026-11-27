@@ -1435,76 +1435,14 @@ impl ClientGame<'_> {
             .topology(slot)
             .unwrap_or(mod_api::PrimitiveTopology::Quads);
         let topology = draw.effective_topology(base_topology);
-        if mesh_draw.instances.start > mesh_draw.instances.end {
-            return Err(PipelineDrawError::InvalidRange);
-        }
-        if vertices.len() != vertex_bindings.len() {
-            return Err(PipelineDrawError::VertexFormatMismatch);
-        }
-        let mut bound_slices = Vec::with_capacity(vertices.len());
-        let mut vertex_records = Vec::with_capacity(vertices.len());
-        for ((binding_idx, fmt), &slice) in vertex_bindings.iter().zip(vertices.iter()) {
-            let stride = fmt.stride as usize;
-            if slice.len() % 4 != 0 || slice.len() % stride != 0 {
-                return Err(PipelineDrawError::InvalidAlignment);
-            }
-            let record_count = slice.len() / stride;
-            match fmt.step_mode {
-                mod_api::VertexStepMode::Vertex => {
-                    if let mod_api::DrawRange::Vertices(ref range) = mesh_draw.range
-                        && (range.start > range.end || (range.end as usize) > record_count)
-                    {
-                        return Err(PipelineDrawError::InvalidRange);
-                    }
-                }
-                mod_api::VertexStepMode::Instance => {
-                    if (mesh_draw.instances.end as usize) > record_count {
-                        return Err(PipelineDrawError::InvalidRange);
-                    }
-                }
-                _ => return Err(PipelineDrawError::VertexFormatMismatch),
-            }
-            vertex_records.push((fmt.step_mode, record_count));
-            bound_slices.push((u32::from(*binding_idx), slice));
-        }
-        check_generated_indices(
-            topology,
+        let bound_slices = check_inline_draw(
+            vertex_bindings,
+            vertices,
+            indices,
             &mesh_draw,
+            topology,
             self.mod_gpu().map_or(u64::MAX, |gpu| gpu.max_buffer_size()),
         )?;
-        match &mesh_draw.range {
-            mod_api::DrawRange::Vertices(range) => {
-                if range.start > range.end {
-                    return Err(PipelineDrawError::InvalidRange);
-                }
-                let count = range.end - range.start;
-                if matches!(
-                    topology,
-                    mod_api::PrimitiveTopology::Quads | mod_api::PrimitiveTopology::Lines
-                ) && count % 4 != 0
-                {
-                    return Err(PipelineDrawError::InvalidRange);
-                }
-            }
-            mod_api::DrawRange::Indexed {
-                indices: idx_range,
-                base_vertex,
-            } => {
-                let Some((fmt, idx_bytes)) = indices else {
-                    return Err(PipelineDrawError::MissingIndexBuffer);
-                };
-                let elem = fmt.byte_size() as usize;
-                if idx_bytes.len() % elem != 0 || idx_bytes.len() % 4 != 0 {
-                    return Err(PipelineDrawError::InvalidAlignment);
-                }
-                let idx_count = idx_bytes.len() / elem;
-                if idx_range.start > idx_range.end || (idx_range.end as usize) > idx_count {
-                    return Err(PipelineDrawError::InvalidRange);
-                }
-                check_indexed_vertices(&vertex_records, fmt, idx_bytes, idx_range, *base_vertex)?;
-            }
-            _ => return Err(PipelineDrawError::InvalidRange),
-        }
         let resolved_bindings = self.resolve_draw_bindings(draw, slot, bindings)?;
         let empty = mesh_draw.instances.is_empty()
             || match &mesh_draw.range {
@@ -1657,6 +1595,7 @@ impl ClientGame<'_> {
         let gpu = self
             .mod_gpu()
             .ok_or(PipelineDrawError::Mesh(mod_api::MeshError::Unavailable))?;
+        check_generated_indices(topology, &mesh_draw, gpu.max_buffer_size())?;
         let resolved = gpu.resolve_mod_mesh_draw(
             mod_api::content::crash::current_native_mod(),
             mesh,
@@ -1794,67 +1733,14 @@ impl ClientGame<'_> {
             .mod_pipelines
             .topology(slot)
             .unwrap_or(mod_api::PrimitiveTopology::Quads);
-        if mesh_draw.instances.start > mesh_draw.instances.end {
-            return Err(PipelineDrawError::InvalidRange);
-        }
-        if vertices.len() != vertex_bindings.len() {
-            return Err(PipelineDrawError::VertexFormatMismatch);
-        }
-        let mut bound_slices = Vec::with_capacity(vertices.len());
-        for ((binding_idx, fmt), &slice) in vertex_bindings.iter().zip(vertices.iter()) {
-            let stride = fmt.stride as usize;
-            if slice.len() % 4 != 0 || slice.len() % stride != 0 {
-                return Err(PipelineDrawError::InvalidAlignment);
-            }
-            let record_count = slice.len() / stride;
-            match fmt.step_mode {
-                mod_api::VertexStepMode::Vertex => {
-                    if let mod_api::DrawRange::Vertices(ref range) = mesh_draw.range
-                        && (range.start > range.end || (range.end as usize) > record_count)
-                    {
-                        return Err(PipelineDrawError::InvalidRange);
-                    }
-                }
-                mod_api::VertexStepMode::Instance => {
-                    if (mesh_draw.instances.end as usize) > record_count {
-                        return Err(PipelineDrawError::InvalidRange);
-                    }
-                }
-                _ => return Err(PipelineDrawError::VertexFormatMismatch),
-            }
-            bound_slices.push((u32::from(*binding_idx), slice));
-        }
-        match &mesh_draw.range {
-            mod_api::DrawRange::Vertices(range) => {
-                if range.start > range.end {
-                    return Err(PipelineDrawError::InvalidRange);
-                }
-                let count = range.end - range.start;
-                if matches!(
-                    topology,
-                    mod_api::PrimitiveTopology::Quads | mod_api::PrimitiveTopology::Lines
-                ) && count % 4 != 0
-                {
-                    return Err(PipelineDrawError::InvalidRange);
-                }
-            }
-            mod_api::DrawRange::Indexed {
-                indices: idx_range, ..
-            } => {
-                let Some((fmt, idx_bytes)) = indices else {
-                    return Err(PipelineDrawError::MissingIndexBuffer);
-                };
-                let elem = fmt.byte_size() as usize;
-                if idx_bytes.len() % elem != 0 || idx_bytes.len() % 4 != 0 {
-                    return Err(PipelineDrawError::InvalidAlignment);
-                }
-                let idx_count = idx_bytes.len() / elem;
-                if idx_range.start > idx_range.end || (idx_range.end as usize) > idx_count {
-                    return Err(PipelineDrawError::InvalidRange);
-                }
-            }
-            _ => return Err(PipelineDrawError::InvalidRange),
-        }
+        let bound_slices = check_inline_draw(
+            vertex_bindings,
+            vertices,
+            indices,
+            &mesh_draw,
+            topology,
+            self.mod_gpu().map_or(u64::MAX, |gpu| gpu.max_buffer_size()),
+        )?;
         let active_target = pass.target.map(|target| (target, 0));
         let resolved_bindings = self.resolve_draw_bindings_into(
             slot,
@@ -2302,6 +2188,88 @@ fn submit_opaque_model_copy(
         .retain_valid_since(start);
 }
 
+/// The checks every inline (per-frame bytes) draw makes, whichever pass records it (#6409):
+/// one vertex slice per declared binding, each aligned and holding the records its step mode
+/// reads, a valid instance and vertex range, a generated index count the device can hold, and
+/// for an indexed draw an aligned index slice whose indices (plus `base_vertex`) address
+/// records every per-vertex slice holds. Answers each slice with its binding index.
+fn check_inline_draw<'v>(
+    vertex_bindings: &[(u8, mod_api::VertexFormat)],
+    vertices: &[&'v [u8]],
+    indices: Option<(mod_api::IndexFormat, &[u8])>,
+    mesh_draw: &mod_api::MeshDraw,
+    topology: mod_api::PrimitiveTopology,
+    max_buffer_size: u64,
+) -> Result<Vec<(u32, &'v [u8])>, PipelineDrawError> {
+    if mesh_draw.instances.start > mesh_draw.instances.end {
+        return Err(PipelineDrawError::InvalidRange);
+    }
+    if vertices.len() != vertex_bindings.len() {
+        return Err(PipelineDrawError::VertexFormatMismatch);
+    }
+    let mut bound_slices = Vec::with_capacity(vertices.len());
+    let mut vertex_records = Vec::with_capacity(vertices.len());
+    for ((binding_idx, fmt), &slice) in vertex_bindings.iter().zip(vertices.iter()) {
+        let stride = fmt.stride as usize;
+        if slice.len() % 4 != 0 || slice.len() % stride != 0 {
+            return Err(PipelineDrawError::InvalidAlignment);
+        }
+        let record_count = slice.len() / stride;
+        match fmt.step_mode {
+            mod_api::VertexStepMode::Vertex => {
+                if let mod_api::DrawRange::Vertices(ref range) = mesh_draw.range
+                    && (range.start > range.end || (range.end as usize) > record_count)
+                {
+                    return Err(PipelineDrawError::InvalidRange);
+                }
+            }
+            mod_api::VertexStepMode::Instance => {
+                if (mesh_draw.instances.end as usize) > record_count {
+                    return Err(PipelineDrawError::InvalidRange);
+                }
+            }
+            _ => return Err(PipelineDrawError::VertexFormatMismatch),
+        }
+        vertex_records.push((fmt.step_mode, record_count));
+        bound_slices.push((u32::from(*binding_idx), slice));
+    }
+    check_generated_indices(topology, mesh_draw, max_buffer_size)?;
+    match &mesh_draw.range {
+        mod_api::DrawRange::Vertices(range) => {
+            if range.start > range.end {
+                return Err(PipelineDrawError::InvalidRange);
+            }
+            let count = range.end - range.start;
+            if matches!(
+                topology,
+                mod_api::PrimitiveTopology::Quads | mod_api::PrimitiveTopology::Lines
+            ) && count % 4 != 0
+            {
+                return Err(PipelineDrawError::InvalidRange);
+            }
+        }
+        mod_api::DrawRange::Indexed {
+            indices: idx_range,
+            base_vertex,
+        } => {
+            let Some((fmt, idx_bytes)) = indices else {
+                return Err(PipelineDrawError::MissingIndexBuffer);
+            };
+            let elem = fmt.byte_size() as usize;
+            if idx_bytes.len() % elem != 0 || idx_bytes.len() % 4 != 0 {
+                return Err(PipelineDrawError::InvalidAlignment);
+            }
+            let idx_count = idx_bytes.len() / elem;
+            if idx_range.start > idx_range.end || (idx_range.end as usize) > idx_count {
+                return Err(PipelineDrawError::InvalidRange);
+            }
+            check_indexed_vertices(&vertex_records, fmt, idx_bytes, idx_range, *base_vertex)?;
+        }
+        _ => return Err(PipelineDrawError::InvalidRange),
+    }
+    Ok(bound_slices)
+}
+
 fn submit_material_model_copy(
     scope: &mut sunrise_client::gfx::EntityQuadScope<'_>,
     faces: &[sunrise_client::models::catalog::BakedFace],
@@ -2586,6 +2554,57 @@ mod tests {
                 0
             ),
             Ok(())
+        );
+    }
+
+    /// An inline draw is checked the same way in the world pass and in an offscreen frame-graph
+    /// pass (#6409), so these refusals hold for both: an index (plus `base_vertex`) past the
+    /// vertex records, and a generated index count past the device's largest buffer.
+    #[test]
+    fn inline_draws_refuse_out_of_range_indices_and_oversized_generated_indices() {
+        use mod_api::{IndexFormat, MeshDraw, PrimitiveTopology, VertexFormat};
+        let bindings = [(0u8, VertexFormat::position_tex_color())];
+        let stride = bindings[0].1.stride as usize;
+        // Four vertex records.
+        let vertices = vec![0u8; stride * 4];
+        let index_bytes =
+            |indices: &[u16]| -> Vec<u8> { indices.iter().flat_map(|i| i.to_le_bytes()).collect() };
+        let check = |indices: &[u8], draw: MeshDraw| {
+            check_inline_draw(
+                &bindings,
+                &[&vertices],
+                Some((IndexFormat::Uint16, indices)),
+                &draw,
+                PrimitiveTopology::Triangles,
+                u64::MAX,
+            )
+            .map(|slices| slices.len())
+        };
+        let in_range = index_bytes(&[0, 1, 2, 3]);
+        assert_eq!(check(&in_range, MeshDraw::indexed(0..4, 0)), Ok(1));
+        // Index 4 addresses a fifth record the slice does not hold.
+        let past = index_bytes(&[0, 1, 2, 4]);
+        assert_eq!(
+            check(&past, MeshDraw::indexed(0..4, 0)),
+            Err(PipelineDrawError::InvalidRange)
+        );
+        // `base_vertex` 1 moves index 3 past the last record.
+        assert_eq!(
+            check(&in_range, MeshDraw::indexed(0..4, 1)),
+            Err(PipelineDrawError::InvalidRange)
+        );
+        // A quad draw whose generated indices need a larger buffer than the device allows.
+        assert_eq!(
+            check_inline_draw(
+                &bindings,
+                &[&vertices],
+                None,
+                &MeshDraw::vertices(0..4),
+                PrimitiveTopology::Quads,
+                23,
+            )
+            .map(|slices| slices.len()),
+            Err(PipelineDrawError::InvalidRange)
         );
     }
 
