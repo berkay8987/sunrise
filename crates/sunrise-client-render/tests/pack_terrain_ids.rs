@@ -12,6 +12,8 @@
 //! (under `python3 tools/ci/with_xvfb.py` without a display) gives each its own. On a Wayland
 //! desktop, unset `WAYLAND_DISPLAY` as `with_xvfb.py` does: the child's own `XDG_RUNTIME_DIR`
 //! has no Wayland socket.
+#[path = "common/daily_child.rs"]
+mod daily_child;
 use client::{
     gfx::{Frame, Renderer, ScreenshotRequest},
     graphics::GraphicsApi,
@@ -32,7 +34,7 @@ use winit::{
 #[test]
 #[ignore = "daily"]
 fn pack_terrain_ids() {
-    run_daily("pack_terrain_ids", &[], fixture);
+    run_daily(daily_child::test_name!(), &[], fixture);
 }
 
 /// Per-section draws that read the pages on a device taken to have no flat draws
@@ -41,7 +43,7 @@ fn pack_terrain_ids() {
 #[ignore = "daily"]
 fn pack_terrain_ids_without_flat_draws() {
     run_daily(
-        "pack_terrain_ids_without_flat_draws",
+        daily_child::test_name!(),
         &[("SUNRISE_FLAT_DRAWS", "0")],
         fixture_without_flat,
     );
@@ -53,7 +55,7 @@ fn pack_terrain_ids_without_flat_draws() {
 #[ignore = "daily"]
 fn pack_terrain_ids_from_the_stream() {
     run_daily(
-        "pack_terrain_ids_from_the_stream",
+        daily_child::test_name!(),
         &[
             ("SUNRISE_FLAT_DRAWS", "0"),
             ("SUNRISE_SHADER_PACK_WITHOUT", "vertex-storage"),
@@ -737,52 +739,14 @@ fn run(out: &Path, fixture: Fixture) {
 }
 
 /// Runs `fixture` in a child process of this test binary that runs only `test`, with `env` set
-/// and throwaway homes.
+/// and throwaway homes (`daily_child`).
 fn run_daily(test: &str, env: &[(&str, &str)], fixture: Fixture) {
-    const OUTPUT: &str = "SUNRISE_TERRAIN_IDS_FIXTURE_OUTPUT";
-    if let Some(output) = std::env::var_os(OUTPUT) {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::VULKAN;
-        let instance = wgpu::Instance::new(descriptor);
-        pollster::block_on(instance.request_adapter(&Default::default()))
-            .expect("pack_terrain_ids refused: no Vulkan adapter");
-        run(Path::new(&output), fixture);
-        return;
-    }
-
-    // Keep the event loop and every writable home in a fresh process.
-    let scratch = tempfile::tempdir().unwrap();
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", test, "--ignored", "--nocapture"])
-        .current_dir(scratch.path())
-        .env(OUTPUT, scratch.path().join("output"))
-        .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
-        .env("SUNRISE_NO_AUDIO", "1")
-        .env("SUNRISE_TELEMETRY_URL", "off")
-        .envs(env.iter().copied());
-    for name in [
-        "SUNRISE_HOME",
-        "SUNRISE_LAUNCHER_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_RUNTIME_DIR",
-        "SUNRISE_LAUNCHER_TRASH",
-        "SUNRISE_LAUNCHER_CLIPBOARD",
-        "SUNRISE_LAUNCHER_DESKTOP",
-    ] {
-        let home = scratch.path().join(name);
-        std::fs::create_dir(&home).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        command.env(name, home);
-    }
-    assert!(
-        command.status().unwrap().success(),
-        "terrain id fixture {test} failed"
+    daily_child::run_daily(
+        test,
+        "SUNRISE_TERRAIN_IDS_FIXTURE_OUTPUT",
+        env,
+        "pack_terrain_ids",
+        |out| run(out, fixture),
     );
 }
 
